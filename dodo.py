@@ -1,35 +1,20 @@
-import csv
-import glob
-import re
-import itertools
-import pickle
-import glob
-import os
-import json
-from pathlib import Path
+def task_project1_setup():
+    return {
+        "actions": [
+            'sudo apt update',
+            'sudo apt -y install postgresql-14-hypopg',
+            'sudo apt -y install python3-pip',
+            'sudo pip3 install sql_metadata',
+            'sudo pip3 install pglast',
+            'sudo pip3 install pandas',
+            'sudo pip3 install pandarallel',
+            'sudo pip3 install tqdm',
+            'sudo pip3 install psycopg2',
+            'sudo pip3 install psycopg2-binary',
+        ],
+        "uptodate": [False],
+    }
 
-import numpy as np
-import pandas as pd
-from sql_metadata import Parser
-from preprocessor import Preprocessor
-from postgres_dbms import PostgresDatabaseConnector
-from doit.action import CmdAction
-from copy import deepcopy
-from cost_evaluation import CostEvaluation
-import random
-
-
-# def task_project1():
-#     # --workload_csv="${workload_csv}" --timeout="${TIME_ACTION_GENERATION}"
-#     timeout?
-#     file path?
-#
-#     return {
-#         # A list of actions. This can be bash or Python callables.
-#         "actions": sql_list,
-#         # Always rerun this task.
-#         "uptodate": [False],
-#     }
 
 def task_project1():
     """
@@ -62,18 +47,26 @@ def task_project1():
     }
 
 
-def task_project1_setup():
-    return {
-        "actions": [
-            'sudo apt-get update',
-            'sudo apt-get -y install python3-pip postgresql-14-hypopg',
-            'sudo pip3 install psycopg2 sql_metadata pglast pandas pandarallel tqdm',
-        ],
-        "uptodate": [False],
-    }
-
-
 def generate(workload_csv, timeout):
+    import csv
+    import glob
+    import re
+    import itertools
+    import pickle
+    import glob
+    import os
+    import json
+    from pathlib import Path
+
+    import numpy as np
+    import pandas as pd
+    from sql_metadata import Parser
+    from preprocessor import Preprocessor
+    from postgres_dbms import PostgresDatabaseConnector
+    from doit.action import CmdAction
+    from copy import deepcopy
+    from cost_evaluation import CostEvaluation
+    import random
     _PG_LOG_COLUMNS = [
         "log_time",
         "user_name",
@@ -112,7 +105,6 @@ def generate(workload_csv, timeout):
 
     db_connector = PostgresDatabaseConnector("project1db")
     # db_connector.drop_all_indexes() # drop 所有index, 不管是不是hypo "select indexname from pg_indexes where schemaname='public'"
-    # select * from hypopg_reset() drop hypo，新链接没必要做
 
     # Set the random seed to obtain deterministic statistics (and cost estimations)
     # because ANALYZE (and alike) use sampling for large tables
@@ -147,27 +139,17 @@ def generate(workload_csv, timeout):
         table_index_dict[tab] = indexes
 
     # print("curr table cols:", table_column_dict) # {'useracct': {'name', 'creation_date', 'u_id', 'email'}, 'item': {'i_id', 'creation_date', 'description', 'title'}, 'review': {'rank', 'u_id', 'i_id', 'rating', 'a_id', 'creation_date', 'comment'}, 'review_rating': {'last_mod_date', 'u_id', 'status', 'rating', 'creation_date', 'a_id', 'type', 'vertical_id'}, 'trust': {'creation_date', 'source_u_id', 'trust', 'target_u_id'}}
-    print("curr table indexes:",
-          table_index_dict)  # {'jungle': {('uuid_field',): 'jungle_pkey', ('int_field9', ' float_field6'): 'index_jungle_intfield9_floatfield6'}, 'sources': {('id',): 'sources_pkey', ('name',): 'sources_name_key'}, 'types': {('id',): 'types_pkey', ('category', ' name'): 'types_category_name_key'}, 'sessions': {('id',): 'sessions_pkey'}, 'observations': {}}
-
+    print("curr table indexes:", table_index_dict)
     preprocessor = Preprocessor(csvlogs=[workload_csv], log_columns=_PG_LOG_COLUMNS,
                                 table_column_dict=table_column_dict)
-    # df0 = preprocessor.get_dataframe()
-    # print(df0.head(n=5).to_string())
 
     dfw = preprocessor.get_grouped_where_cnt()
-    # print(dfw.to_string())
 
     dfo = preprocessor.get_grouped_order_by_cnt()
-    # print(dfo.to_string())
 
     dfj = preprocessor.get_grouped_join_cnt()
 
-    # print(dfj.to_string())
-
     def get_appeared_candidate_with_cnt_dict(names_dict, df, banned_set):
-        # df给出的组合可能不来自同一table
-        # 提取出现过的所有table，转化为同一table上的所有可能列组合
         # output format: {'useracct': {('u_id',): 61}, 'item': {('i_id',): 62}, 'review': {('i_id',): 99, ('i_id', 'u_id'): 58, ('u_id',): 30}, 'trust': {('source_u_id', 'target_u_id'): 88, ('source_u_id',): 37}}
         appeared_table_candidate_combination_dict = deepcopy(names_dict)
         for tup in df.index: # (col col col) appears together in a query
@@ -191,7 +173,7 @@ def generate(workload_csv, timeout):
                     appeared_table_candidate_combination_dict[table][key] + cnt if key in \
                                                                                    appeared_table_candidate_combination_dict[
                                                                                        table].keys() else cnt
-        # 删除appeared_table_candidate_combination_dict 的dict大小为0的
+        # remove empty dicts
         return {a: b for a, b in appeared_table_candidate_combination_dict.items() if len(b) > 0}
 
     def permutate_candidate_dict_all_lengths_prefix_cnt(cand_dict):
@@ -204,7 +186,6 @@ def generate(workload_csv, timeout):
             for cand_w_underscore, cnt in cands.items():
                 for num_cols in range(1, min(cand_max_len + 1, len(cand_w_underscore) + 1)):
                     for permute_tuple in itertools.permutations(cand_w_underscore, num_cols):
-                        # print(tab, permute_tuple)
                         permute_dict[permute_tuple] = permute_dict[
                                                           permute_tuple] + cnt if permute_tuple in permute_dict.keys() else cnt
             ret[tab] = permute_dict
@@ -218,7 +199,6 @@ def generate(workload_csv, timeout):
             for cand_w_underscore, cnt in cands.items():
                 for num_cols in range(1, min(cand_max_len + 1, len(cand_w_underscore) + 1)):
                     for permute_tuple in itertools.permutations(cand_w_underscore, num_cols):
-                        # print(tab, permute_tuple)
                         ret[tab][permute_tuple] = ret[tab][permute_tuple] + cnt if permute_tuple in ret[
                             tab].keys() else cnt
         return ret
@@ -258,7 +238,7 @@ def generate(workload_csv, timeout):
     merged_candidate = merge_no_permutate_candidate_dict_prefix_cnt(merged_candidate, order_candidate_no_permutation)
     print("merged_candidate_with_o: ", merged_candidate)
 
-    # 处理merged_candidate，按cnt高低确定搜索顺序. 元素格式：(cnt, cols, table), 第一个相等的按第二个排序
+    # merged_candidate sorted by cnt and len of cols
     possible_permute_cand_sort_list = []
     for tab, cands in merged_candidate.items():
         for cand, cnt in cands.items():
@@ -267,19 +247,11 @@ def generate(workload_csv, timeout):
     possible_permute_cand_sort_list.sort(key=lambda x: (-x[0], len(x[1])))
     # print("possible_permute_cand_sort_list: ",possible_permute_cand_sort_list)
 
-    # 带每个template count的
-    # df1 = preprocessor.get_grouped_dataframe_interval() # sorted by cnts,
-    # print(df1.to_string())
-
-    # 行数
     ratio = min(1, 1000 / len(preprocessor.get_dataframe().index))
     sampled_workload = preprocessor.get_sampled_rows(ratio)  # sample by this number!!!可以计算累加百分位数做，带上where claus
     wlkd_size = len(sampled_workload.index)
     print("sampled workload size: ", wlkd_size)
     # print(sampled_workload.to_string())
-    # 爆搜策略开始
-    # 每次开始，要更新cost eval那里记录的当前所有index为db上有的那些index。需要解决：上一轮建立好了，咋drop的问题---db会重置，需要记录drop操作
-    # 以下集合包括table_index_dict，因为可能在延长前缀
     searched_candidate = set()
     related_curr_table_cols = set()
     related_curr_table_cols2index_name = {}
@@ -295,11 +267,6 @@ def generate(workload_csv, timeout):
     # TODO: more db connectors parallelism
     cost_eval = CostEvaluation(db_connector, related_curr_table_cols, related_curr_table_cols2index_name,
                                sampled_workload)
-
-    # tmp = set()#related_curr_table_cols.copy()
-    # tmp.add((('int_field5',), 'jungle'))
-    # current_best_cost = cost_eval.calculate_cost(tmp)
-    # print(current_best_cost)
 
     possible_permute_cand_sorted_set = set([(cand[1], cand[2]) for cand in possible_permute_cand_sort_list])
     utilized_indexes_benefits, utilized_indexes_old, query_details, current_indexes_cost, potential_better_cost = cost_eval.get_wkld_utilized_indexes_improvement(
@@ -318,12 +285,6 @@ def generate(workload_csv, timeout):
     
     sorted_benefits = [(k, v) for k, v in utilized_new_hypo_indexes_benefits.items()]
     sorted_benefits.sort(key=lambda x: (-x[1], len(x[0][0])))  # least cols first
-
-    # print(query_details)
-    # print(current_best_cost)
-
-    # current_best_cost = cost_eval.calculate_cost(related_curr_table_cols)
-    # print(current_best_cost)
 
     is_firstround = False
     round_number = 1
@@ -408,8 +369,6 @@ def generate(workload_csv, timeout):
                 clustered_on_table[tab] = (benefit, cols)
         
         to_cluster_list.update([(benefit_cols[1], tab) for tab, benefit_cols in clustered_on_table.items()])
-        # 更新best, 第一轮可以keep real
-        # current_best_reals_hypo_cost = cost_eval.calculate_cost(to_build_list, keep_real=True)
         current_best_reals_hypo_cost = -1
         current_best_built_cols = to_build_list
         current_best_real_result = -1
@@ -436,8 +395,6 @@ def generate(workload_csv, timeout):
                 max_file = max(files, key=os.path.getctime)
                 with open(max_file, 'r') as f:
                     dict_new = json.load(f)
-                # 读取dict["Goodput (requests/second)"]
-
                 summary_path_format = './grading/iteration_{}/*summary.json'.format(round_number-2)
                 files = glob.glob(summary_path_format)
                 max_file_prev = max(files, key=os.path.getctime)
@@ -468,7 +425,6 @@ def generate(workload_csv, timeout):
                 pass
 
         if revert == False: # can do some exploring
-            # 在真正build后，本来收益并不大的会出现--因为build和假象有差距 比如trust (source_u_id,target_u_id)和反过来，所以再build一次看看吧
             print(sorted_benefits)
             for col_tup, benefit in sorted_benefits:
                 if col_tup in searched_candidate:
@@ -495,10 +451,7 @@ def generate(workload_csv, timeout):
                     else:
                         print("not enough, not consider:", col_tup)
             if len(to_build_list) == 0:
-                # 本轮utilized都搜过了
-                # 再看prefix，很可能没啥用。。。
-                # 控制变量drop index
-
+                # drop when no builds
                 for index_tup in old_setting_not_utilized_real_indexes: # does happen, especially hypopg made a lot of mistake at start
                     cols, tab = index_tup
                     if tab not in clustered_on_table.keys():
@@ -506,17 +459,11 @@ def generate(workload_csv, timeout):
                     if cols == clustered_on_table[tab]:
                         continue # let's assume this will not happen, we should not simply revert to its prefix since it may never appeared....
                     to_drop_list.add(index_tup)
-                # 还是看如果drop。且cluster index在他上，退回best single column。有可能prefix不好.此时重新cluster？
-
-                # TODO: Orderby列 CLUSTER review using index_i_id_creation_date_backwards; 爆搜结束的轮做orderby cluster实验
-
     def dict_to_actions_sql(to_build, to_drop, to_cluster):
-        # format of to_build: candidate list (cols, tab)
-        # format of to_drop: candidate list (cols, tab)
+        # format of to_build / to_drop: candidate sets (cols, tab)
         actions_sql_list = [
             # "CREATE xxx"
         ]
-        # build里出现的，一定没在当前数据库里，每个cand只会被检查一次。如果同时出现在了 build里，一定是本轮先加入的，那么从to build删除
         # drop first, then cluster, then create, to modify less indexes
         for cols, tab in to_drop:
             names = ",".join(cols)
@@ -573,8 +520,6 @@ def generate(workload_csv, timeout):
     actions_sql_list = dict_to_actions_sql(to_build_list, to_drop_list, to_cluster_list)
     with open("actions.sql", 'w') as f:
         f.writelines('\n'.join(actions_sql_list))
-
-    # dumping
 
     dump_vars.update({"round_number": round_number, "searched_candidate": searched_candidate,
                  "best_single_cost_on_table": best_single_cost_on_table,
