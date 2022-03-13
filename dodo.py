@@ -9,8 +9,8 @@ def task_project1_setup():
             'sudo pip3 install pandas',
             'sudo pip3 install pandarallel',
             'sudo pip3 install tqdm',
-            'sudo pip3 install psycopg2',
             'sudo pip3 install psycopg2-binary',
+            'sudo pip3 install psycopg2',
         ],
         "uptodate": [False],
     }
@@ -363,7 +363,7 @@ def generate(workload_csv, timeout):
             if tab in clustered_on_table.keys():
                 prefix = clustered_on_table[tab][1] # previously seen a better one
             else:
-                prefix = best_single_cost_on_table[tab][1] # here we use single to avoid random but large costs for multi col indexes
+                prefix = best_single_cost_on_table[tab][1] # here we use single to avoid random but large costs for multi col indexes. such as source id shoud be better than target id, but (s, t) can appear in either way with great cost
             if tuple(cols[:len(prefix)]) == prefix:
                 print("better or curr cluster index for table: ", tab, cols)
                 clustered_on_table[tab] = (benefit, cols)
@@ -436,6 +436,7 @@ def generate(workload_csv, timeout):
                     to_build_list.add(col_tup)
                     to_cluster_list = set([k for k in to_cluster_list if k[1] != tab]) # remove old one
                     to_cluster_list.add(col_tup)
+                    best_single_cost_on_table[tab] = (benefit, cols)
                     clustered_on_table[tab] = (benefit, cols) # changing prefix, the following rounds will extend it
                 else: # seen and not best
                     prefix = clustered_on_table[tab][1]
@@ -456,8 +457,18 @@ def generate(workload_csv, timeout):
                     cols, tab = index_tup
                     if tab not in clustered_on_table.keys():
                         continue # let's assume this will not happen....
-                    if cols == clustered_on_table[tab]:
-                        continue # let's assume this will not happen, we should not simply revert to its prefix since it may never appeared....
+                    # will drop, consider prefix
+                    if cols == clustered_on_table[tab][1]:
+                        if cols == best_single_cost_on_table[tab][1]:
+                            continue # let's assume this will not happen,
+                        print(cols, "clustered is not used, go back to prefix")
+                        prefix = cols[:-1] # back to prefix. this is always derived from best single col
+                        if (prefix, tab) not in utilized_indexes_old:
+                            to_build_list.add((prefix, tab))
+                            # ok to drop, can be extended next time
+                        clustered_on_table[tab] = (best_single_cost_on_table[tab][0], prefix)
+                        to_cluster_list.add((prefix, tab))
+                    # not clustered, drop anyway
                     to_drop_list.add(index_tup)
     def dict_to_actions_sql(to_build, to_drop, to_cluster):
         # format of to_build / to_drop: candidate sets (cols, tab)
