@@ -1,5 +1,5 @@
 # adapted from noisepage: https://github.com/cmu-db/noisepage-pilot/
-# Used for extracting where / orderby columns and sampling workload grouped by templates
+# For extracting where / orderby / groupby columns and sampling workload grouped by templates
 
 import glob
 import re
@@ -69,7 +69,7 @@ class Preprocessor:
         gb.drop(gb.loc[gb.index == ""].index)
         return grouped_df.sort_values(by=['count'], ascending=False)
 
-    def get_sampled_rows(self, fraction=1.0):
+    def get_sampled_rows_by_template(self, fraction=1.0):
         if fraction == 1.0:
             self._raw_wkld_df[["query_subst", "where_cols"]]
         gb_sample = self._raw_wkld_df.groupby("query_template").sample(frac=fraction)
@@ -212,7 +212,7 @@ class Preprocessor:
         return pd.concat(process_map(Preprocessor._read_csv, csvlogs, [log_columns for _ in csvlogs]))
 
     @staticmethod
-    def _extract_query(message_series):  # 拿到裸sql string，比如select
+    def _extract_query(message_series):  # 拿到裸sql string
         """
         Extract SQL queries from the CSVLOG's message column.
 
@@ -372,9 +372,10 @@ class Preprocessor:
                     tables = pser.tables
                     if 'where' in dc.keys():
                         wheres = table_parse(dc['where'], tables, table_column_dict)
+                        # no sort
                         if 'order_by' in dc.keys():
                             orderbys = table_parse_order_by_group_by(dc['order_by'], tables, table_column_dict, wheres)
-                            # no sort
+                        # no sort
                         if 'group_by' in dc.keys():
                             groupbys = table_parse_order_by_group_by(dc['group_by'], tables, table_column_dict, wheres)
                         wheres.sort()
@@ -411,11 +412,11 @@ class Preprocessor:
                     print("still cannot parse columns:", sql2)
 
 
-            for token in pglast.parser.scan(sql):  # 用pglast
+            for token in pglast.parser.scan(sql):
                 token_str = str(sql[token.start: token.end + 1])
                 if token.start > last_end:
-                    new_sql.append(" ")  # 插入一个空格在list，最后join
-                if token.name in ["ICONST", "FCONST", "SCONST"]:  # 所有字符串等常量
+                    new_sql.append(" ")
+                if token.name in ["ICONST", "FCONST", "SCONST"]:
                     # Integer, float, or string constant.
                     new_sql.append("$" + str(len(params) + 1))
                     params.append(token_str)
@@ -423,13 +424,13 @@ class Preprocessor:
                     new_sql.append(token_str)
                 last_end = token.end + 1
 
-            new_sql = "".join(new_sql)  # ？？还是转化成参数形式，只是带了数字
+            new_sql = "".join(new_sql)
             return new_sql, tuple(params), tuple(wheres), tuple(orderbys), tuple(joins), tuple(
                 groupbys), tuple(banned_cols)  # keep old
 
-        return query_series.parallel_apply(parse, args=(self.table_column_dict,))  # 想办法打出来看下/看别人怎么用
+        return query_series.parallel_apply(parse, args=(self.table_column_dict,))
 
-    def _from_csvlogs(self, csvlogs, log_columns):  # 主函数在这里！！
+    def _from_csvlogs(self, csvlogs, log_columns):
         """
         Glue code for initializing the Preprocessor from CSVLOGs.
 
@@ -466,20 +467,20 @@ class Preprocessor:
         clock("Extract queries")
 
         print("Extract parameters: ", end="", flush=True)
-        df["params"] = self._extract_params(df["detail"])  # simple为空操作
+        df["params"] = self._extract_params(df["detail"])  # empty op for simple format
         df.drop(columns=["detail"], inplace=True)
         clock("Extract parameters")
 
         print("Substitute parameters into query: ", end="", flush=True)
         df["query_subst"] = self._substitute_params(df, "query_raw",
-                                                    "params")  # simple为空操作，返回"query_subst"就是原来的string没变化
+                                                    "params")
         df.drop(columns=["query_raw", "params"], inplace=True)
         clock("Substitute parameters into query")
 
         print("Parse query: ", end="", flush=True)
-        parsed = self._parse(df["query_subst"])  # 调用pglast
+        parsed = self._parse(df["query_subst"])
         df[["query_template", "query_params", "where_cols", "order_by_cols", "join_cols",
-            "group_by_cols", "banned_cols"]] = pd.DataFrame(parsed.tolist(), index=df.index)  # template是拿来找一摸一样形式的
+            "group_by_cols", "banned_cols"]] = pd.DataFrame(parsed.tolist(), index=df.index)
         clock("Parse query")
         self._raw_wkld_df = df[
             ["query_subst", "query_template", "query_params", "where_cols", "order_by_cols", "join_cols",
@@ -511,29 +512,26 @@ class Preprocessor:
             df["query_params"] = df["query_params"].map(lambda x: tuple(x))
 
         # grouping queries by template-parameters count.
-        gbp = df.groupby(["query_template", "query_params"]).size()  # 这应该就是一摸一样的q个数。直接拿template where后面对应的数字东西即可
+        gbp = df.groupby(["query_template", "query_params"]).size()
         grouped_by_params = pd.DataFrame(gbp, columns=["count"])
-        # grouped_by_params.drop('', axis=0, level=0, inplace=True)
-        # TODO(WAN): I am not sure if I'm wrong or pandas is wrong.
-        #  Above raises ValueError: Must pass non-zero number of levels/codes.
-        #  So we'll do this instead...
+
         grouped_by_params = grouped_by_params[~grouped_by_params.index.isin([("", ())])]
-        self._df = df  # 原始结果存在get dataframe离了
+        self._df = df  # 原始结果存在get dataframe
         self._grouped_df_params = grouped_by_params
 
-        gbp_w = df.groupby(["where_cols"]).size()  # 这应该就是一摸一样的q个数。直接拿template where后面对应的数字东西即可
+        gbp_w = df.groupby(["where_cols"]).size()
         gbp_w.drop((), axis=0, inplace=True)
         # gbp_w.drop(, axis=0, inplace=True)
         w_grouped_by_params = pd.DataFrame(gbp_w, columns=["count"])
         self._grouped_where_cnt = w_grouped_by_params.sort_values(by=['count'],
                                                                   ascending=False)  # [~w_grouped_by_params.index.isin([("", ())])]
 
-        gbp_o = df.groupby(["order_by_cols"]).size()  # 这应该就是一摸一样的q个数。直接拿template where后面对应的数字东西即可
+        gbp_o = df.groupby(["order_by_cols"]).size()
         gbp_o.drop((), axis=0, inplace=True)
         o_grouped_by_params = pd.DataFrame(gbp_o, columns=["count"])
         self._grouped_order_by_cnt = o_grouped_by_params.sort_values(by=['count'], ascending=False)
 
-        gbp_j = df.groupby(["join_cols"]).size()  # 这应该就是一摸一样的q个数。直接拿template where后面对应的数字东西即可
+        gbp_j = df.groupby(["join_cols"]).size()
         gbp_j.drop((), axis=0, inplace=True)
         j_grouped_by_params = pd.DataFrame(gbp_j, columns=["count"])
         self._grouped_join_cnt = j_grouped_by_params.sort_values(by=['count'], ascending=False)
@@ -547,5 +545,3 @@ class Preprocessor:
         gbp_b.drop((), axis=0, inplace=True)
         self._banned_cols = set(a[0] for a in gbp_b.index)
         print("self._banned_cols", self._banned_cols)
-
-        # for cols in

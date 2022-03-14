@@ -102,6 +102,7 @@ def generate(workload_csv, timeout):
     drop_prefix_no_test = False
     drop_prefix_test = True
     first_round_benefit_thresh = 5
+    wkld_sample_size = 1000
 
     db_connector = PostgresDatabaseConnector("project1db")
     # db_connector.drop_all_indexes() # drop 所有index, 不管是不是hypo "select indexname from pg_indexes where schemaname='public'"
@@ -129,7 +130,7 @@ def generate(workload_csv, timeout):
         curr_index_def = db_connector.exec_fetch(
             "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = '{}'".format(tab),
             one=False)  # schemaname = 'public'
-        p1 = re.compile(r'[(](.*?)[)]', re.S)  # 最小匹配括号
+        p1 = re.compile(r'[(](.*?)[)]', re.S)  # get the smallest brackets, (col1, col2,...)
         for row in curr_index_def:
             res = re.findall(p1, row[1])
             assert (len(res) == 1)
@@ -149,10 +150,12 @@ def generate(workload_csv, timeout):
 
     dfj = preprocessor.get_grouped_join_cnt()
 
+    dfg = preprocessor.get_grouped_group_by_cnt()
+
     def get_appeared_candidate_with_cnt_dict(names_dict, df, banned_set):
         # output format: {'useracct': {('u_id',): 61}, 'item': {('i_id',): 62}, 'review': {('i_id',): 99, ('i_id', 'u_id'): 58, ('u_id',): 30}, 'trust': {('source_u_id', 'target_u_id'): 88, ('source_u_id',): 37}}
         appeared_table_candidate_combination_dict = deepcopy(names_dict)
-        for tup in df.index: # (col col col) appears together in a query
+        for tup in df.index:  # (col col col) appears together in a query
             tmp_tab_col_dict = {}
             cnt = df['count'][tup]
             for tab_col in tup:
@@ -204,14 +207,13 @@ def generate(workload_csv, timeout):
         return ret
 
     def merge_no_permutate_candidate_dict_prefix_cnt(sum_dict, cand_dict):
-        # 注意：orderby prefix where里的col不能要
         ret = deepcopy(sum_dict)
         for tab, cands in cand_dict.items():
             if tab not in ret.keys():
                 ret[tab] = {}
             for cand_w_underscore, cnt in cands.items():
-                # orderby 修改 start_num = 带perfix个数+1
-                start_num = 1
+                # orderby start_num = len of perfix where cols +1
+                start_num = 2
                 for num_cols in range(start_num, min(cand_max_len + 1, len(cand_w_underscore) + 1)):
                     prefix_tuple = cand_w_underscore[:num_cols]
                     ret[tab][prefix_tuple] = ret[tab][prefix_tuple] + cnt if prefix_tuple in ret[tab].keys() else cnt
@@ -231,12 +233,20 @@ def generate(workload_csv, timeout):
     order_candidate_no_permutation = get_appeared_candidate_with_cnt_dict(table_names_dict, dfo, banned_set)
     print("order_candidate_no_permutation: ", order_candidate_no_permutation)
 
+    groupby_candidate_no_permutation = get_appeared_candidate_with_cnt_dict(table_names_dict, dfg, banned_set)
+    print("groupby_candidate_no_permutation: ", groupby_candidate_no_permutation)
+
     merged_candidate = merge_permutate_candidate_dict_all_lengths_prefix_cnt(where_candidate_permutation,
                                                                              join_candidate_no_permutation)
     # print("merged_candidate: ", merged_candidate)
 
     merged_candidate = merge_no_permutate_candidate_dict_prefix_cnt(merged_candidate, order_candidate_no_permutation)
     print("merged_candidate_with_o: ", merged_candidate)
+
+    merged_candidate = merge_no_permutate_candidate_dict_prefix_cnt(merged_candidate, groupby_candidate_no_permutation)
+    print("merged_candidate_with_g: ", merged_candidate)
+
+    seen_tables = set(merged_candidate.keys())
 
     # merged_candidate sorted by cnt and len of cols
     possible_permute_cand_sort_list = []
@@ -247,8 +257,8 @@ def generate(workload_csv, timeout):
     possible_permute_cand_sort_list.sort(key=lambda x: (-x[0], len(x[1])))
     # print("possible_permute_cand_sort_list: ",possible_permute_cand_sort_list)
 
-    ratio = min(1, 1000 / len(preprocessor.get_dataframe().index))
-    sampled_workload = preprocessor.get_sampled_rows(ratio)  # sample by this number!!!可以计算累加百分位数做，带上where claus
+    ratio = min(1, wkld_sample_size / len(preprocessor.get_dataframe().index))
+    sampled_workload = preprocessor.get_sampled_rows_by_template(ratio)
     wlkd_size = len(sampled_workload.index)
     print("sampled workload size: ", wlkd_size)
     # print(sampled_workload.to_string())
@@ -261,7 +271,7 @@ def generate(workload_csv, timeout):
 
     print("related curr real indexes:", related_curr_table_cols)
     print("related curr real indexes2index_name:", related_curr_table_cols2index_name)
-    current_best_cols = deepcopy(related_curr_table_cols)  # 不用dump
+    current_best_cols = deepcopy(related_curr_table_cols)
     searched_candidate.update(current_best_cols)
 
     # TODO: more db connectors parallelism
@@ -277,12 +287,13 @@ def generate(workload_csv, timeout):
                                           k not in related_curr_table_cols}
     print("utilized_new_hypo_indexes_benefits", utilized_new_hypo_indexes_benefits)
     # no longer user indexes
-    new_setting_not_utilized_real_indexes = set([k for k in related_curr_table_cols if k not in utilized_indexes_benefits.keys()])
+    new_setting_not_utilized_real_indexes = set(
+        [k for k in related_curr_table_cols if k not in utilized_indexes_benefits.keys()])
     print("new_setting_not_utilized_real_indexes", new_setting_not_utilized_real_indexes)
     # old setting not utilized indexes
-    old_setting_not_utilized_real_indexes = related_curr_table_cols- utilized_indexes_old
+    old_setting_not_utilized_real_indexes = related_curr_table_cols - utilized_indexes_old
     print("old_setting_not_utilized_real_indexes", old_setting_not_utilized_real_indexes)
-    
+
     sorted_benefits = [(k, v) for k, v in utilized_new_hypo_indexes_benefits.items()]
     sorted_benefits.sort(key=lambda x: (-x[1], len(x[0][0])))  # least cols first
 
@@ -293,8 +304,8 @@ def generate(workload_csv, timeout):
             dump_vars = pickle.load(f)
         # use new parsed tables to check if appeared before
         print("load success")
-        for cols, tab in possible_permute_cand_sorted_set: # a index tup list
-            if tab not in dump_vars["best_single_cost_on_table"].keys(): # new combination of tab and cols
+        for cols, tab in possible_permute_cand_sorted_set:  # a index tup list
+            if tab not in dump_vars["seen_tables"]:  # new combination of tab and cols
                 is_firstround = True
                 print("is first round! seeing not seen table: ", tab)
                 break
@@ -318,7 +329,7 @@ def generate(workload_csv, timeout):
         print("sorted_benefits", sorted_benefits)
         for col_tup, benefit in sorted_benefits:
             cols, tab = col_tup
-            if tab not in best_single_cost_on_table.keys(): # but the largest on table
+            if tab not in best_single_cost_on_table.keys():  # but the largest on table
                 to_build_list.add(col_tup)
                 print("adding:", col_tup)
                 best_single_cost_on_table[tab] = (benefit, cols)
@@ -358,24 +369,25 @@ def generate(workload_csv, timeout):
         print("best_subsumed_cost_on_table: ", best_subsumed_cost_on_table)
         sorted_possible_clusters = [(k, v) for k, v in subsumed_cols_and_benefits.items()]
         sorted_possible_clusters.sort(key=lambda x: (-x[1], len(x[0][0])))  # least cols first
-        for col_tup, benefit in sorted_possible_clusters: # extend all prefixes by the earliest appeared index
+        for col_tup, benefit in sorted_possible_clusters:  # extend all prefixes by the earliest appeared index
             cols, tab = col_tup
             if tab in clustered_on_table.keys():
-                prefix = clustered_on_table[tab][1] # previously seen a better one
+                prefix = clustered_on_table[tab][1]  # previously seen a better one
             else:
-                prefix = best_single_cost_on_table[tab][1] # here we use single to avoid random but large costs for multi col indexes. such as source id shoud be better than target id, but (s, t) can appear in either way with great cost
+                prefix = best_single_cost_on_table[tab][
+                    1]  # here we use single to avoid random but large costs for multi col indexes. such as source id shoud be better than target id, but (s, t) can appear in either way with great cost
             if tuple(cols[:len(prefix)]) == prefix:
                 print("better or curr cluster index for table: ", tab, cols)
                 clustered_on_table[tab] = (benefit, cols)
-        
+
         to_cluster_list.update([(benefit_cols[1], tab) for tab, benefit_cols in clustered_on_table.items()])
         current_best_reals_hypo_cost = -1
         current_best_built_cols = to_build_list
         current_best_real_result = -1
         to_drop_list = old_setting_not_utilized_real_indexes
-        dump_vars = {} # new for 1st round
+        dump_vars = {}  # new for 1st round
     else:
-        searched_candidate.update(dump_vars["searched_candidate"]) # set of (cols, tab)
+        searched_candidate.update(dump_vars["searched_candidate"])  # set of (cols, tab)
         round_number = dump_vars["round_number"] + 1
         best_single_cost_on_table = dump_vars["best_single_cost_on_table"]
         best_subsumed_cost_on_table = dump_vars["best_subsumed_cost_on_table"]
@@ -390,12 +402,12 @@ def generate(workload_csv, timeout):
         if round_number > 2:
             try:
                 print("checking results", round_number)
-                summary_path_format = './grading/iteration_{}/*summary.json'.format(round_number-1)
+                summary_path_format = './grading/iteration_{}/*summary.json'.format(round_number - 1)
                 files = glob.glob(summary_path_format)
                 max_file = max(files, key=os.path.getctime)
                 with open(max_file, 'r') as f:
                     dict_new = json.load(f)
-                summary_path_format = './grading/iteration_{}/*summary.json'.format(round_number-2)
+                summary_path_format = './grading/iteration_{}/*summary.json'.format(round_number - 2)
                 files = glob.glob(summary_path_format)
                 max_file_prev = max(files, key=os.path.getctime)
                 with open(max_file_prev, 'r') as f:
@@ -405,12 +417,13 @@ def generate(workload_csv, timeout):
                 bench2 = max_file_prev.split('_')[1].split('/')[1]
                 print(bench1, bench2)
                 if bench1 == bench2:
-                    print("new and old throughput: ", dict_new["Goodput (requests/second)"], dict_old["Goodput (requests/second)"])
+                    print("new and old throughput: ", dict_new["Goodput (requests/second)"],
+                          dict_old["Goodput (requests/second)"])
                     if dict_new["Goodput (requests/second)"] < revert_threshold * dict_old["Goodput (requests/second)"]:
                         print("big degrade! ")
-                        to_drop_list.update(dump_vars["to_build_list_" + str(round_number-1)])
-                        to_build_list.update(dump_vars["to_drop_list_" + str(round_number-1)])
-                        if len(to_drop_list) !=0 or len(to_build_list) !=0:
+                        to_drop_list.update(dump_vars["to_build_list_" + str(round_number - 1)])
+                        to_build_list.update(dump_vars["to_drop_list_" + str(round_number - 1)])
+                        if len(to_drop_list) != 0 or len(to_build_list) != 0:
                             print("not empty, do revert")
                             revert = True
                         else:
@@ -424,7 +437,7 @@ def generate(workload_csv, timeout):
                 print("open files failed")
                 pass
 
-        if revert == False: # can do some exploring
+        if revert == False:  # can do some exploring
             print(sorted_benefits)
             for col_tup, benefit in sorted_benefits:
                 if col_tup in searched_candidate:
@@ -434,16 +447,16 @@ def generate(workload_csv, timeout):
                 if tab not in best_single_cost_on_table.keys() or benefit > best_single_cost_on_table[tab][0]:
                     print("new single best, adding and clustering on:", col_tup)
                     to_build_list.add(col_tup)
-                    to_cluster_list = set([k for k in to_cluster_list if k[1] != tab]) # remove old one
+                    to_cluster_list = set([k for k in to_cluster_list if k[1] != tab])  # remove old one
                     to_cluster_list.add(col_tup)
                     best_single_cost_on_table[tab] = (benefit, cols)
-                    clustered_on_table[tab] = (benefit, cols) # changing prefix, the following rounds will extend it
-                else: # seen and not best
+                    clustered_on_table[tab] = (benefit, cols)  # changing prefix, the following rounds will extend it
+                else:  # seen and not best
                     prefix = clustered_on_table[tab][1]
                     if cols[:len(prefix)] == prefix:
                         print("clustered is prefix, consider adding:", col_tup)
                         to_build_list.add(col_tup)
-                        to_cluster_list = set([k for k in to_cluster_list if k[1] != tab]) # remove old one
+                        to_cluster_list = set([k for k in to_cluster_list if k[1] != tab])  # remove old one
                         to_cluster_list.add(col_tup)
                         clustered_on_table[tab] = (benefit + clustered_on_table[tab][0], cols)
                     elif benefit > first_round_benefit_thresh * wlkd_size:
@@ -453,16 +466,16 @@ def generate(workload_csv, timeout):
                         print("not enough, not consider:", col_tup)
             if len(to_build_list) == 0:
                 # drop when no builds
-                for index_tup in old_setting_not_utilized_real_indexes: # does happen, especially hypopg made a lot of mistake at start
+                for index_tup in old_setting_not_utilized_real_indexes:  # does happen, especially hypopg made a lot of mistake at start
                     cols, tab = index_tup
                     if tab not in clustered_on_table.keys():
-                        continue # let's assume this will not happen....
+                        continue  # let's assume this will not happen....
                     # will drop, consider prefix
                     if cols == clustered_on_table[tab][1]:
                         if cols == best_single_cost_on_table[tab][1]:
-                            continue # let's assume this will not happen,
+                            continue  # let's assume this will not happen,
                         print(cols, "clustered is not used, go back to prefix")
-                        prefix = cols[:-1] # back to prefix. this is always derived from best single col
+                        prefix = cols[:-1]  # back to prefix. this is always derived from best single col
                         if (prefix, tab) not in utilized_indexes_old:
                             to_build_list.add((prefix, tab))
                             # ok to drop, can be extended next time
@@ -470,6 +483,7 @@ def generate(workload_csv, timeout):
                         to_cluster_list.add((prefix, tab))
                     # not clustered, drop anyway
                     to_drop_list.add(index_tup)
+
     def dict_to_actions_sql(to_build, to_drop, to_cluster):
         # format of to_build / to_drop: candidate sets (cols, tab)
         actions_sql_list = [
@@ -533,18 +547,18 @@ def generate(workload_csv, timeout):
         f.writelines('\n'.join(actions_sql_list))
 
     dump_vars.update({"round_number": round_number, "searched_candidate": searched_candidate,
-                 "best_single_cost_on_table": best_single_cost_on_table,
-                 "best_subsumed_cost_on_table": best_subsumed_cost_on_table,
-                 "to_build_list_" + str(round_number): to_build_list,
-                 "to_drop_list_" + str(round_number): to_drop_list,
-                 "to_cluster_list_" + str(round_number): to_cluster_list,
-                 "clustered_on_table": clustered_on_table,
-                 "current_best_built_cols" : current_best_built_cols,
-                 "current_best_reals_hypo_cost":current_best_reals_hypo_cost,
-                 "current_best_real_result": current_best_real_result,
-    })
+                      "seen_tables": seen_tables,
+                      "best_single_cost_on_table": best_single_cost_on_table,
+                      "best_subsumed_cost_on_table": best_subsumed_cost_on_table,
+                      "to_build_list_" + str(round_number): to_build_list,
+                      "to_drop_list_" + str(round_number): to_drop_list,
+                      "to_cluster_list_" + str(round_number): to_cluster_list,
+                      "clustered_on_table": clustered_on_table,
+                      "current_best_built_cols": current_best_built_cols,
+                      "current_best_reals_hypo_cost": current_best_reals_hypo_cost,
+                      "current_best_real_result": current_best_real_result,
+                      })
     print(dump_vars)
 
     with open('mystate.pkl', 'wb') as f:
         pickle.dump(dump_vars, f)
-
