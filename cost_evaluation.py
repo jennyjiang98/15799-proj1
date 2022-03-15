@@ -38,9 +38,9 @@ class CostEvaluation:
             index_name_substr=table_name +'_'+ '_'.join(cols)+'\''
             if index_name_substr not in plan_str: # if no '\'', will get all prefixes
                 if not index in self.curr_real_indexes2index_name.keys():
-                    continue
+                    continue # the hypo index is truely not used
                 if self.curr_real_indexes2index_name[index] not in plan_str:
-                    continue
+                    continue # the real index is truely not used
             # print(query, "used index ", table_name +'_'+ '_'.join(cols)+'\'')
             used_indexes.add(index)
 

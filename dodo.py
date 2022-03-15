@@ -67,32 +67,7 @@ def generate(workload_csv, timeout):
     from copy import deepcopy
     from cost_evaluation import CostEvaluation
     import random
-    _PG_LOG_COLUMNS = [
-        "log_time",
-        "user_name",
-        "database_name",
-        "process_id",
-        "connection_from",
-        "session_id",
-        "session_line_num",
-        "command_tag",
-        "session_start_time",
-        "virtual_transaction_id",
-        "transaction_id",
-        "error_severity",
-        "sql_state_code",
-        "message",  # cols
-        "detail",
-        "hint",
-        "internal_query",
-        "internal_query_pos",
-        "context",
-        "query",
-        "query_pos",
-        "location",
-        "application_name",
-        "backend_type",
-    ]
+
     # 参数
     cand_max_len = 3
     min_cost_improvement = 1.003
@@ -105,7 +80,7 @@ def generate(workload_csv, timeout):
     wkld_sample_size = 1000
 
     db_connector = PostgresDatabaseConnector("project1db")
-    # db_connector.drop_all_indexes() # drop 所有index, 不管是不是hypo "select indexname from pg_indexes where schemaname='public'"
+    # db_connector.drop_all_indexes() # "select indexname from pg_indexes where schemaname='public'"
 
     # Set the random seed to obtain deterministic statistics (and cost estimations)
     # because ANALYZE (and alike) use sampling for large tables
@@ -141,7 +116,7 @@ def generate(workload_csv, timeout):
 
     # print("curr table cols:", table_column_dict) # {'useracct': {'name', 'creation_date', 'u_id', 'email'}, 'item': {'i_id', 'creation_date', 'description', 'title'}, 'review': {'rank', 'u_id', 'i_id', 'rating', 'a_id', 'creation_date', 'comment'}, 'review_rating': {'last_mod_date', 'u_id', 'status', 'rating', 'creation_date', 'a_id', 'type', 'vertical_id'}, 'trust': {'creation_date', 'source_u_id', 'trust', 'target_u_id'}}
     print("curr table indexes:", table_index_dict)
-    preprocessor = Preprocessor(csvlogs=[workload_csv], log_columns=_PG_LOG_COLUMNS,
+    preprocessor = Preprocessor(csvlogs=[workload_csv],
                                 table_column_dict=table_column_dict)
 
     dfw = preprocessor.get_grouped_where_cnt()
@@ -241,10 +216,10 @@ def generate(workload_csv, timeout):
     # print("merged_candidate: ", merged_candidate)
 
     merged_candidate = merge_no_permutate_candidate_dict_prefix_cnt(merged_candidate, order_candidate_no_permutation)
-    print("merged_candidate_with_o: ", merged_candidate)
+    # print("merged_candidate_with_o: ", merged_candidate)
 
     merged_candidate = merge_no_permutate_candidate_dict_prefix_cnt(merged_candidate, groupby_candidate_no_permutation)
-    print("merged_candidate_with_g: ", merged_candidate)
+    print("merged_candidate_final: ", merged_candidate)
 
     seen_tables = set(merged_candidate.keys())
 
@@ -318,6 +293,7 @@ def generate(workload_csv, timeout):
     to_drop_list = set()  # [(col, tab)]
     to_build_list = set()
     to_cluster_list = set()
+    to_hash_list = set()
 
     if is_firstround:
         best_single_cost_on_table = {}  # cost, clustered_index cols
@@ -381,6 +357,15 @@ def generate(workload_csv, timeout):
                 clustered_on_table[tab] = (benefit, cols)
 
         to_cluster_list.update([(benefit_cols[1], tab) for tab, benefit_cols in clustered_on_table.items()])
+
+        # try hash indexes after deciding what to cluster. Don't know why hypopg explain do not pick hash when it's int
+        # if not used, will drop anyway
+        # if have time should put type definition into an "Index" class
+        for cols, tab in utilized_indexes_benefits.keys():
+            if len(cols) == 1 and db_connector.is_col_varchar(cols[0], tab):
+                print("to hash adding: ", cols, tab)
+                to_hash_list.add((cols, tab))
+
         current_best_reals_hypo_cost = -1
         current_best_built_cols = to_build_list
         current_best_real_result = -1
@@ -440,6 +425,7 @@ def generate(workload_csv, timeout):
         if revert == False:  # can do some exploring
             print(sorted_benefits)
             for col_tup, benefit in sorted_benefits:
+                # if actions.sql failed is lost then this would be a problem?
                 if col_tup in searched_candidate:
                     print("searched, ignoring:", col_tup)
                     continue
@@ -475,38 +461,47 @@ def generate(workload_csv, timeout):
                         if cols == best_single_cost_on_table[tab][1]:
                             continue  # let's assume this will not happen,
                         print(cols, "clustered is not used, go back to prefix")
-                        prefix = cols[:-1]  # back to prefix. this is always derived from best single col
-                        if (prefix, tab) not in utilized_indexes_old:
-                            to_build_list.add((prefix, tab))
-                            # ok to drop, can be extended next time
-                        clustered_on_table[tab] = (best_single_cost_on_table[tab][0], prefix)
-                        to_cluster_list.add((prefix, tab))
+                        if len(cols) > 1:
+                            prefix = cols[:-1]  # back to prefix. this is always derived from best single col
+                            if (prefix, tab) not in utilized_indexes_old:
+                                to_build_list.add((prefix, tab))
+                                # ok to drop, can be extended next time
+                            clustered_on_table[tab] = (best_single_cost_on_table[tab][0], prefix)
+                            to_cluster_list.add((prefix, tab))
                     # not clustered, drop anyway
                     to_drop_list.add(index_tup)
 
-    def dict_to_actions_sql(to_build, to_drop, to_cluster):
+    def dict_to_actions_sql(to_build, to_drop, to_cluster, to_hash):
         # format of to_build / to_drop: candidate sets (cols, tab)
         actions_sql_list = [
             # "CREATE xxx"
         ]
         # drop first, then cluster, then create, to modify less indexes
         for cols, tab in to_drop:
-            names = ",".join(cols)
-            statement = (
-                f"drop index {'index_' + tab + '_' + '_'.join(cols)} ;"
-            )
-            actions_sql_list.append(statement)
+            if tab in table_index_dict.keys() and cols in table_index_dict[tab].keys():
+                statement = (
+                    f"drop index {table_index_dict[tab][cols]};"
+                )
+                # avoid dropping errors on primary keys, which makes all actions fail. try dropping is fast
+                # for building, we don't worry since we never use duplicate names
+                if db_connector.try_exec(statement):
+                    actions_sql_list.append(statement)
+            else:
+                print("error! cannot drop a index not exists: ", cols, tab)
 
         both = to_build.intersection(to_cluster)
         to_cluster -= both
         to_build -= both
 
         for cols, tab in to_cluster:
-            names = ",".join(cols)
-            statement = (
-                f"cluster {tab} using {'index_' + tab + '_' + '_'.join(cols)};"
-            )
-            actions_sql_list.append(statement)
+            index_name = 'index_' + tab + '_' + '_'.join(cols)
+            if tab in table_index_dict.keys() and cols in table_index_dict[tab].keys() and table_index_dict[tab][cols] == index_name:
+                statement = (
+                    f"cluster {tab} using {index_name};"
+                )
+                actions_sql_list.append(statement)
+            else:
+                print("error! cannot cluster on a index not exists: ", index_name)
 
         for ele in both:
             cols, tab = ele
@@ -532,17 +527,29 @@ def generate(workload_csv, timeout):
         # no modify on the original lists
         to_cluster |= both
         to_build |= both
+
+        for cols, tab in to_hash:
+            names = ",".join(cols)
+            statement = (
+                f"create index if not exists {'hash_index_' + tab + '_' + '_'.join(cols)} "
+                f"on {tab} using hash ({names});"
+            )
+            actions_sql_list.append(statement)
+
         return actions_sql_list
 
     searched_candidate.update(to_build_list)
     both = to_build_list.intersection(to_drop_list)
     to_build_list -= both
     to_drop_list -= both
+
+
     print("to build list: ", to_build_list)
     print("to drop list: ", to_drop_list)
     print("to cluster list: ", to_cluster_list)
+    print("to hash list: ", to_hash_list)
 
-    actions_sql_list = dict_to_actions_sql(to_build_list, to_drop_list, to_cluster_list)
+    actions_sql_list = dict_to_actions_sql(to_build_list, to_drop_list, to_cluster_list, to_hash_list)
     with open("actions.sql", 'w') as f:
         f.writelines('\n'.join(actions_sql_list))
 
@@ -553,6 +560,7 @@ def generate(workload_csv, timeout):
                       "to_build_list_" + str(round_number): to_build_list,
                       "to_drop_list_" + str(round_number): to_drop_list,
                       "to_cluster_list_" + str(round_number): to_cluster_list,
+                      "to_hash_list_" + str(round_number): to_hash_list,
                       "clustered_on_table": clustered_on_table,
                       "current_best_built_cols": current_best_built_cols,
                       "current_best_reals_hypo_cost": current_best_reals_hypo_cost,

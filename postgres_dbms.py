@@ -110,6 +110,8 @@ class PostgresDatabaseConnector(DatabaseConnector):
         indexes = self.exec_fetch(stmt, one=False)
         for index in indexes:
             index_name = index[0]
+            if 'pkey' in index_name:
+                continue
             drop_stmt = "drop index {}".format(index_name)
             print("Dropping index {}".format(index_name))
             self.exec_only(drop_stmt)
@@ -134,6 +136,11 @@ class PostgresDatabaseConnector(DatabaseConnector):
         self._cursor.execute("set statement_timeout = 0")
         return result
 
+    def is_col_varchar(self, col_name, tab_name):
+        statement = "SELECT data_type FROM information_schema.columns WHERE table_name = '{}' and column_name = '{}';".format(tab_name, col_name)
+        type_name = self.exec_fetch(statement, one=True)[0]
+        return 'char' in type_name
+
     def _get_cost(self, query):
         query_plan = self._get_plan(query)
         total_cost = query_plan["Total Cost"]
@@ -143,4 +150,13 @@ class PostgresDatabaseConnector(DatabaseConnector):
         statement = f"explain (format json) {query}"
         query_plan = self.exec_fetch(statement)[0][0]["Plan"]
         return query_plan
+
+    def try_exec(self, statement):
+        try:
+            self._cursor.execute(statement)
+            return True
+        except Exception as e:
+            logging.error(f"{statement}, {e}")
+            self._connection.rollback()
+            return False
 

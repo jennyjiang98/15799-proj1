@@ -488,7 +488,7 @@ class Preprocessor:
         return df[
             ["log_time", "query_template", "query_params", "where_cols", "order_by_cols", "join_cols", "group_by_cols", "banned_cols"]]
 
-    def __init__(self, csvlogs=None, log_columns=None, parquet_path=None, table_column_dict=None):
+    def __init__(self, csvlogs=None, parquet_path=None, table_column_dict=None):
         """
         Initialize the preprocessor with either CSVLOGs or a HDF dataframe.
 
@@ -500,6 +500,32 @@ class Preprocessor:
         hdf_path : str | None
             Path to a .h5 file containing a Preprocessor's get_dataframe().
         """
+        log_columns = [
+            "log_time",
+            "user_name",
+            "database_name",
+            "process_id",
+            "connection_from",
+            "session_id",
+            "session_line_num",
+            "command_tag",
+            "session_start_time",
+            "virtual_transaction_id",
+            "transaction_id",
+            "error_severity",
+            "sql_state_code",
+            "message",  # cols
+            "detail",
+            "hint",
+            "internal_query",
+            "internal_query_pos",
+            "context",
+            "query",
+            "query_pos",
+            "location",
+            "application_name",
+            "backend_type",
+        ]
         assert table_column_dict is not None
         self.table_column_dict = table_column_dict
         if csvlogs is not None:
