@@ -63,13 +63,12 @@ def generate(workload_csv, timeout):
     from sql_metadata import Parser
     from preprocessor import Preprocessor
     from postgres_dbms import PostgresDatabaseConnector
-    from doit.action import CmdAction
     from copy import deepcopy
     from cost_evaluation import CostEvaluation
+    from utils import *
     import random
 
-    # 参数
-    cand_max_len = 3
+    # parameters
     min_cost_improvement = 1.003
     max_dropping_cost_degrade = 1.003
 
@@ -80,13 +79,11 @@ def generate(workload_csv, timeout):
     wkld_sample_size = 1000
 
     db_connector = PostgresDatabaseConnector("project1db")
-    # db_connector.drop_all_indexes() # "select indexname from pg_indexes where schemaname='public'"
-
-    # Set the random seed to obtain deterministic statistics (and cost estimations)
-    # because ANALYZE (and alike) use sampling for large tables
+    # db_connector.drop_all_indexes()
     db_connector.create_statistics()
     db_connector.commit()
 
+    # get current tables and indexes info
     result = db_connector.exec_fetch(
         "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'",
         one=False)
@@ -96,6 +93,8 @@ def generate(workload_csv, timeout):
     table_index_dict = table_names_dict.copy()
     # print("table_names_dict", result)
 
+
+    # get current columns
     for tab in table_column_dict.keys():
         cols = db_connector.exec_fetch(
             "SELECT column_name FROM information_schema.columns where table_name = '{}'".format(tab), one=False)
@@ -116,108 +115,36 @@ def generate(workload_csv, timeout):
 
     # print("curr table cols:", table_column_dict) # {'useracct': {'name', 'creation_date', 'u_id', 'email'}, 'item': {'i_id', 'creation_date', 'description', 'title'}, 'review': {'rank', 'u_id', 'i_id', 'rating', 'a_id', 'creation_date', 'comment'}, 'review_rating': {'last_mod_date', 'u_id', 'status', 'rating', 'creation_date', 'a_id', 'type', 'vertical_id'}, 'trust': {'creation_date', 'source_u_id', 'trust', 'target_u_id'}}
     print("curr table indexes:", table_index_dict)
+
+
+    # preprocess data, parse tables using the fetched table_column_dict
     preprocessor = Preprocessor(csvlogs=[workload_csv],
                                 table_column_dict=table_column_dict)
 
+    # get column candidates which appeared together. Here I considered where/orderby/join/groupby
     dfw = preprocessor.get_grouped_where_cnt()
-
     dfo = preprocessor.get_grouped_order_by_cnt()
-
     dfj = preprocessor.get_grouped_join_cnt()
-
     dfg = preprocessor.get_grouped_group_by_cnt()
-
-    def get_appeared_candidate_with_cnt_dict(names_dict, df, banned_set):
-        # output format: {'useracct': {('u_id',): 61}, 'item': {('i_id',): 62}, 'review': {('i_id',): 99, ('i_id', 'u_id'): 58, ('u_id',): 30}, 'trust': {('source_u_id', 'target_u_id'): 88, ('source_u_id',): 37}}
-        appeared_table_candidate_combination_dict = deepcopy(names_dict)
-        for tup in df.index:  # (col col col) appears together in a query
-            tmp_tab_col_dict = {}
-            cnt = df['count'][tup]
-            for tab_col in tup:
-                if tab_col in banned_set:
-                    # ignore this col
-                    continue
-                lst = tab_col.split('.')
-                tab = lst[0]
-                col = lst[1]
-                if tab in tmp_tab_col_dict.keys():
-                    tmp_tab_col_dict[tab].append(col)  # sorted for groupby and join, not sorted for order by
-                else:
-                    tmp_tab_col_dict[tab] = [col]
-
-            for table, cols in tmp_tab_col_dict.items():
-                key = tuple(cols)
-                appeared_table_candidate_combination_dict[table][key] = \
-                    appeared_table_candidate_combination_dict[table][key] + cnt if key in \
-                                                                                   appeared_table_candidate_combination_dict[
-                                                                                       table].keys() else cnt
-        # remove empty dicts
-        return {a: b for a, b in appeared_table_candidate_combination_dict.items() if len(b) > 0}
-
-    def permutate_candidate_dict_all_lengths_prefix_cnt(cand_dict):
-        # input format: {'useracct': {('u_id',): 61}, 'item': {('i_id',): 62}, 'review': {('i_id',): 99, ('i_id', 'u_id'): 58, ('u_id',): 30}, 'trust': {('source_u_id', 'target_u_id'): 88, ('source_u_id',): 37}}
-        # output will enumerate all subsets, since if the subset appear many times it will be generated. The count to be consistent.
-        # {'useracct': {('u_id',): 61}, 'item': {('i_id',): 62}, 'review': {('i_id',): 157, ('u_id',): 88, ('i_id', 'u_id'): 58, ('u_id', 'i_id'): 58}, 'trust': {('source_u_id',): 125, ('target_u_id',): 88, ('source_u_id', 'target_u_id'): 88, ('target_u_id', 'source_u_id'): 88}}
-        ret = cand_dict.copy()
-        for tab, cands in cand_dict.items():
-            permute_dict = {}
-            for cand_w_underscore, cnt in cands.items():
-                for num_cols in range(1, min(cand_max_len + 1, len(cand_w_underscore) + 1)):
-                    for permute_tuple in itertools.permutations(cand_w_underscore, num_cols):
-                        permute_dict[permute_tuple] = permute_dict[
-                                                          permute_tuple] + cnt if permute_tuple in permute_dict.keys() else cnt
-            ret[tab] = permute_dict
-        return ret
-
-    def merge_permutate_candidate_dict_all_lengths_prefix_cnt(sum_dict, cand_dict):
-        ret = deepcopy(sum_dict)
-        for tab, cands in cand_dict.items():
-            if tab not in ret.keys():
-                ret[tab] = {}
-            for cand_w_underscore, cnt in cands.items():
-                for num_cols in range(1, min(cand_max_len + 1, len(cand_w_underscore) + 1)):
-                    for permute_tuple in itertools.permutations(cand_w_underscore, num_cols):
-                        ret[tab][permute_tuple] = ret[tab][permute_tuple] + cnt if permute_tuple in ret[
-                            tab].keys() else cnt
-        return ret
-
-    def merge_no_permutate_candidate_dict_prefix_cnt(sum_dict, cand_dict):
-        ret = deepcopy(sum_dict)
-        for tab, cands in cand_dict.items():
-            if tab not in ret.keys():
-                ret[tab] = {}
-            for cand_w_underscore, cnt in cands.items():
-                # orderby start_num = len of perfix where cols +1
-                start_num = 2
-                for num_cols in range(start_num, min(cand_max_len + 1, len(cand_w_underscore) + 1)):
-                    prefix_tuple = cand_w_underscore[:num_cols]
-                    ret[tab][prefix_tuple] = ret[tab][prefix_tuple] + cnt if prefix_tuple in ret[tab].keys() else cnt
-        return ret
-
     banned_set = preprocessor.get_banned_set()
     where_candidate_no_permutation = get_appeared_candidate_with_cnt_dict(table_names_dict, dfw, banned_set)
     # print("where_candidate_no_permutation: ", where_candidate_no_permutation) #{'useracct': {('u_id',): 61}, 'item': {('i_id',): 62}, 'review': {('i_id',): 99, ('i_id', 'u_id'): 58, ('u_id',): 30}, 'trust': {('source_u_id', 'target_u_id'): 88, ('source_u_id',): 37}}
     where_candidate_permutation = permutate_candidate_dict_all_lengths_prefix_cnt(where_candidate_no_permutation)
     # print("where_candidate_permutation: ", where_candidate_permutation)
-
     join_candidate_no_permutation = get_appeared_candidate_with_cnt_dict(table_names_dict, dfj, banned_set)
     # print("join_candidate_no_permutation: ", join_candidate_no_permutation)
     join_candidate_permutation = permutate_candidate_dict_all_lengths_prefix_cnt(join_candidate_no_permutation)
     # print("join_candidate_permutation: ", join_candidate_permutation)
-
     order_candidate_no_permutation = get_appeared_candidate_with_cnt_dict(table_names_dict, dfo, banned_set)
     print("order_candidate_no_permutation: ", order_candidate_no_permutation)
-
     groupby_candidate_no_permutation = get_appeared_candidate_with_cnt_dict(table_names_dict, dfg, banned_set)
     print("groupby_candidate_no_permutation: ", groupby_candidate_no_permutation)
 
     merged_candidate = merge_permutate_candidate_dict_all_lengths_prefix_cnt(where_candidate_permutation,
                                                                              join_candidate_no_permutation)
     # print("merged_candidate: ", merged_candidate)
-
     merged_candidate = merge_no_permutate_candidate_dict_prefix_cnt(merged_candidate, order_candidate_no_permutation)
     # print("merged_candidate_with_o: ", merged_candidate)
-
     merged_candidate = merge_no_permutate_candidate_dict_prefix_cnt(merged_candidate, groupby_candidate_no_permutation)
     print("merged_candidate_final: ", merged_candidate)
 
@@ -232,27 +159,30 @@ def generate(workload_csv, timeout):
     possible_permute_cand_sort_list.sort(key=lambda x: (-x[0], len(x[1])))
     # print("possible_permute_cand_sort_list: ",possible_permute_cand_sort_list)
 
-    ratio = min(1, wkld_sample_size / len(preprocessor.get_dataframe().index))
-    sampled_workload = preprocessor.get_sampled_rows_by_template(ratio)
-    wlkd_size = len(sampled_workload.index)
-    print("sampled workload size: ", wlkd_size)
-    # print(sampled_workload.to_string())
+    # searched_candidate: to ensure same index candidate is not build twice
     searched_candidate = set()
+    # related current table columns: we only consider tables used in this workload.csv
     related_curr_table_cols = set()
     related_curr_table_cols2index_name = {}
     for tab in merged_candidate.keys():
         related_curr_table_cols.update([(cols, tab) for cols in table_index_dict[tab].keys()])
         related_curr_table_cols2index_name.update([((cols, tab), v) for cols, v in table_index_dict[tab].items()])
-
     print("related curr real indexes:", related_curr_table_cols)
     print("related curr real indexes2index_name:", related_curr_table_cols2index_name)
     current_best_cols = deepcopy(related_curr_table_cols)
     searched_candidate.update(current_best_cols)
 
+
+    # Get workloads sampled by template
+    ratio = min(1, wkld_sample_size / len(preprocessor.get_dataframe().index))
+    sampled_workload = preprocessor.get_sampled_rows_by_template(ratio)
+    wlkd_size = len(sampled_workload.index)
+    print("sampled workload size: ", wlkd_size)
+
+    # Get utilized indexes
     # TODO: more db connectors parallelism
     cost_eval = CostEvaluation(db_connector, related_curr_table_cols, related_curr_table_cols2index_name,
                                sampled_workload)
-
     possible_permute_cand_sorted_set = set([(cand[1], cand[2]) for cand in possible_permute_cand_sort_list])
     utilized_indexes_benefits, utilized_indexes_old, query_details, current_indexes_cost, potential_better_cost = cost_eval.get_wkld_utilized_indexes_improvement(
         possible_permute_cand_sorted_set)
@@ -261,7 +191,7 @@ def generate(workload_csv, timeout):
     utilized_new_hypo_indexes_benefits = {k: v for k, v in utilized_indexes_benefits.items() if
                                           k not in related_curr_table_cols}
     print("utilized_new_hypo_indexes_benefits", utilized_new_hypo_indexes_benefits)
-    # no longer user indexes
+    # no longer used indexes in the hypothetical new setting
     new_setting_not_utilized_real_indexes = set(
         [k for k in related_curr_table_cols if k not in utilized_indexes_benefits.keys()])
     print("new_setting_not_utilized_real_indexes", new_setting_not_utilized_real_indexes)
@@ -272,6 +202,8 @@ def generate(workload_csv, timeout):
     sorted_benefits = [(k, v) for k, v in utilized_new_hypo_indexes_benefits.items()]
     sorted_benefits.sort(key=lambda x: (-x[1], len(x[0][0])))  # least cols first
 
+    # Selection logic. The first round generates all candidates from utilized hypo indexes, and following rounds do adjustments
+    # Determine whether this is the first round for a benchmark
     is_firstround = False
     round_number = 1
     try:
@@ -290,13 +222,13 @@ def generate(workload_csv, timeout):
     if not is_firstround:
         print("is not first round")
 
-    to_drop_list = set()  # [(col, tab)]
+    to_drop_list = set()  # set of [(col, tab)]
     to_build_list = set()
     to_cluster_list = set()
     to_hash_list = set()
 
     if is_firstround:
-        best_single_cost_on_table = {}  # cost, clustered_index cols
+        best_single_cost_on_table = {}  # cost, for selecting clustered_index cols
         best_subsumed_cost_on_table = {}
         clustered_on_table = {}
 
@@ -305,7 +237,7 @@ def generate(workload_csv, timeout):
         print("sorted_benefits", sorted_benefits)
         for col_tup, benefit in sorted_benefits:
             cols, tab = col_tup
-            if tab not in best_single_cost_on_table.keys():  # but the largest on table
+            if tab not in best_single_cost_on_table.keys():
                 to_build_list.add(col_tup)
                 print("adding:", col_tup)
                 best_single_cost_on_table[tab] = (benefit, cols)
@@ -322,7 +254,7 @@ def generate(workload_csv, timeout):
         for high_ratio_pos, index_benefit_high_ratio in enumerate(sorted_benefits):
             if index_benefit_high_ratio in index_benefits_to_remove:
                 continue
-            # Test all following elements (with lower ratios) in the list
+            # Check all following elements (with lower ratios) in the list whether they're included by the current cols
             iteration_pos = high_ratio_pos + 1
             cols, tab = index_benefit_high_ratio[0]
             for index_benefit_lower_ratio in sorted_benefits[iteration_pos:]:
@@ -350,8 +282,8 @@ def generate(workload_csv, timeout):
             if tab in clustered_on_table.keys():
                 prefix = clustered_on_table[tab][1]  # previously seen a better one
             else:
-                prefix = best_single_cost_on_table[tab][
-                    1]  # here we use single to avoid random but large costs for multi col indexes. such as source id shoud be better than target id, but (s, t) can appear in either way with great cost
+                prefix = best_single_cost_on_table[tab][1]
+                # here we use single to avoid random but large costs for multi col indexes. such as source id shoud be better than target id, but (s, t) can appear in either way with great cost
             if tuple(cols[:len(prefix)]) == prefix:
                 print("better or curr cluster index for table: ", tab, cols)
                 clustered_on_table[tab] = (benefit, cols)
@@ -471,85 +403,17 @@ def generate(workload_csv, timeout):
                     # not clustered, drop anyway
                     to_drop_list.add(index_tup)
 
-    def dict_to_actions_sql(to_build, to_drop, to_cluster, to_hash):
-        # format of to_build / to_drop: candidate sets (cols, tab)
-        actions_sql_list = [
-            # "CREATE xxx"
-        ]
-        # drop first, then cluster, then create, to modify less indexes
-        for cols, tab in to_drop:
-            if tab in table_index_dict.keys() and cols in table_index_dict[tab].keys():
-                statement = (
-                    f"drop index {table_index_dict[tab][cols]};"
-                )
-                # avoid dropping errors on primary keys, which makes all actions fail. try dropping is fast
-                # for building, we don't worry since we never use duplicate names
-                if db_connector.try_exec(statement):
-                    actions_sql_list.append(statement)
-            else:
-                print("error! cannot drop a index not exists: ", cols, tab)
-
-        both = to_build.intersection(to_cluster)
-        to_cluster -= both
-        to_build -= both
-
-        for cols, tab in to_cluster:
-            index_name = 'index_' + tab + '_' + '_'.join(cols)
-            if tab in table_index_dict.keys() and cols in table_index_dict[tab].keys() and table_index_dict[tab][cols] == index_name:
-                statement = (
-                    f"cluster {tab} using {index_name};"
-                )
-                actions_sql_list.append(statement)
-            else:
-                print("error! cannot cluster on a index not exists: ", index_name)
-
-        for ele in both:
-            cols, tab = ele
-            names = ",".join(cols)
-            statement = (
-                f"create index if not exists {'index_' + tab + '_' + '_'.join(cols)} "
-                f"on {tab} ({names});"
-            )
-            actions_sql_list.append(statement)
-
-            statement = (
-                f"cluster {tab} using {'index_' + tab + '_' + '_'.join(cols)};"
-            )
-            actions_sql_list.append(statement)
-
-        for cols, tab in to_build:
-            names = ",".join(cols)
-            statement = (
-                f"create index if not exists {'index_' + tab + '_' + '_'.join(cols)} "
-                f"on {tab} ({names});"
-            )
-            actions_sql_list.append(statement)
-        # no modify on the original lists
-        to_cluster |= both
-        to_build |= both
-
-        for cols, tab in to_hash:
-            names = ",".join(cols)
-            statement = (
-                f"create index if not exists {'hash_index_' + tab + '_' + '_'.join(cols)} "
-                f"on {tab} using hash ({names});"
-            )
-            actions_sql_list.append(statement)
-
-        return actions_sql_list
-
     searched_candidate.update(to_build_list)
     both = to_build_list.intersection(to_drop_list)
     to_build_list -= both
     to_drop_list -= both
-
 
     print("to build list: ", to_build_list)
     print("to drop list: ", to_drop_list)
     print("to cluster list: ", to_cluster_list)
     print("to hash list: ", to_hash_list)
 
-    actions_sql_list = dict_to_actions_sql(to_build_list, to_drop_list, to_cluster_list, to_hash_list)
+    actions_sql_list = dict_to_actions_sql(to_build_list, to_drop_list, to_cluster_list, to_hash_list, table_index_dict, db_connector)
     with open("actions.sql", 'w') as f:
         f.writelines('\n'.join(actions_sql_list))
 
