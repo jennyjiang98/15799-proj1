@@ -34,7 +34,6 @@ def task_project1():
         "actions": [
             'echo "Starting action generation."',
             generate,
-            'echo \'{"VACUUM": false, "RESTART": true}\' > config.json',
         ],
         # Always rerun this task.
         "uptodate": [False],

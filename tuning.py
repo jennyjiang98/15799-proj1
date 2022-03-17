@@ -24,8 +24,6 @@ def generate(workload_csv, timeout):
 
     db_connector = PostgresDatabaseConnector("project1db")
     # db_connector.drop_all_indexes()
-    db_connector.create_statistics()
-    db_connector.commit()
 
     # get current tables and indexes info
     table_names_dict, table_column_dict, table_index_dict = db_connector.get_table_info_dicts()
@@ -65,11 +63,16 @@ def generate(workload_csv, timeout):
     wlkd_size = len(sampled_workload.index)
     print("sampled workload size: ", wlkd_size)
 
+    # the final product from queries: cols_table_tuple candidates!
+    possible_permute_cand_sorted_set = set([(cand[1], cand[2]) for cand in possible_permute_cand_sort_list])
+    is_firstround, dump_vars = is_first_round(possible_permute_cand_sorted_set)
+    if is_firstround:
+        db_connector.create_statistics()
+        db_connector.commit()
+
     # Get utilized indexes
     cost_eval = CostEvaluation(db_connector, related_curr_table_triples2index_obj,
                                sampled_workload)
-    # the final product from queries: cols_table_tuple candidates!
-    possible_permute_cand_sorted_set = set([(cand[1], cand[2]) for cand in possible_permute_cand_sort_list])
     utilized_indexes_benefits, utilized_indexes_old, query_details, current_indexes_cost, potential_better_cost = cost_eval.get_wkld_utilized_indexes_improvement(
         possible_permute_cand_sorted_set)
     print("utilized_indexes_benefits", utilized_indexes_benefits)
@@ -105,7 +108,6 @@ def generate(workload_csv, timeout):
     # Selection logic. The first round generates all candidates from utilized hypo indexes, and following rounds do adjustments
 
     # Determine whether this is the first round for a benchmark
-    is_firstround, dump_vars = is_first_round(possible_permute_cand_sorted_set)
     if is_firstround:
         dump_vars = {}  # new for 1st round
         best_col_combination_on_table_cost = {}  # cost, for btrees only, for selecting clustered_index cols. format: {"table": (benefit, (cols))}
@@ -286,6 +288,12 @@ def generate(workload_csv, timeout):
                                            related_curr_table_triples2index_obj, db_connector)
     with open("actions.sql", 'w') as f:
         f.writelines('\n'.join(actions_sql_list))
+
+    with open("config.json", 'w') as f:
+        if is_firstround or len(preprocessor.get_banned_set()) > 0:
+            f.writelines('{"VACUUM": true, "RESTART": true}')
+        else:
+            f.writelines('{"VACUUM": false, "RESTART": true}')
 
     dump_vars.update({"round_number": round_number, "searched_candidate": searched_candidate,
                       "seen_tables": seen_tables,
