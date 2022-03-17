@@ -1,16 +1,16 @@
 def task_project1_setup():
     return {
         "actions": [
-            'sudo apt update',
-            'sudo apt -y install postgresql-14-hypopg',
-            'sudo apt -y install python3-pip',
-            'sudo pip3 install sql_metadata',
-            'sudo pip3 install pglast',
-            'sudo pip3 install pandas',
-            'sudo pip3 install pandarallel',
-            'sudo pip3 install tqdm',
-            'sudo pip3 install psycopg2-binary',
-            'sudo pip3 install psycopg2',
+            # 'sudo apt update',
+            # 'sudo apt -y install postgresql-14-hypopg',
+            # 'sudo apt -y install python3-pip',
+            'pip3 install sql_metadata',
+            'pip3 install pglast',
+            'pip3 install pandas',
+            'pip3 install pandarallel',
+            'pip3 install tqdm',
+            'pip3 install psycopg2-binary',
+            'pip3 install psycopg2',
         ],
         "uptodate": [False],
     }
