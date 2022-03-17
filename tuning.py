@@ -290,7 +290,7 @@ def generate(workload_csv, timeout):
         f.writelines('\n'.join(actions_sql_list))
 
     with open("config.json", 'w') as f:
-        if is_firstround or len(preprocessor.get_banned_set()) > 0:
+        if is_firstround or (len(preprocessor.get_banned_set()) > 0 and round_number % 3 == 0):
             f.writelines('{"VACUUM": true, "RESTART": true}')
         else:
             f.writelines('{"VACUUM": false, "RESTART": true}')
