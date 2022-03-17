@@ -1,6 +1,7 @@
 # adapted from hyrise: https://github.com/hyrise/index_selection_evaluation
 import logging
 
+
 # Class that encapsulates simulated/WhatIf-Indexes.
 # This is usually used by the CostEvaluation class and there should be no need
 # to use it manually.
@@ -13,16 +14,16 @@ class WhatIfIndexCreation:
         self.tup2hypo_oid = {}
         self.db_connector = db_connector
 
-    def get_hypo_name(self, index_table_tup):
-        return self.tup2hypo_name[index_table_tup]
+    def get_hypo_name(self, triple):
+        return self.tup2hypo_name[triple]
 
-    def simulate_index(self, index_table_tup):
-        result = self.db_connector.simulate_index(index_table_tup[0], index_table_tup[1])
+    def simulate_index(self, triple):
+        result = self.db_connector.simulate_index(triple)
         index_oid = result[0]
         index_name = result[1]
         # print("inside simulate return: ", index_name)
-        self.tup2hypo_name[index_table_tup] = index_name
-        self.tup2hypo_oid[index_table_tup] = index_oid
+        self.tup2hypo_name[triple] = index_name
+        self.tup2hypo_oid[triple] = index_oid
         # if store_size:
         #     potential_index.estimated_size = self.estimate_index_size(index_oid)
 
@@ -42,4 +43,3 @@ class WhatIfIndexCreation:
         result = self.db_connector.exec_fetch(statement)[0]
         assert result > 0, "Hypothetical index does not exist."
         return result
-

@@ -2,6 +2,8 @@
 import logging
 import re
 import psycopg2
+from copy import deepcopy
+from utils import Index
 
 from database_connector import DatabaseConnector
 
@@ -23,7 +25,8 @@ class PostgresDatabaseConnector(DatabaseConnector):
     def create_connection(self):
         if self._connection:
             self.close()
-        self._connection = psycopg2.connect("dbname={} user=project1user password=project1pass host=127.0.0.1".format(self.db_name))
+        self._connection = psycopg2.connect(
+            "dbname={} user=project1user password=project1pass host=127.0.0.1".format(self.db_name))
         self._connection.autocommit = self.autocommit
         self._cursor = self._connection.cursor()
 
@@ -31,9 +34,39 @@ class PostgresDatabaseConnector(DatabaseConnector):
         self.exec_only("CREATE EXTENSION IF NOT EXISTS hypopg")
         self.commit()
 
-    def database_names(self):
-        result = self.exec_fetch("select datname from pg_database", False)
-        return [x[0] for x in result]
+    def get_table_info_dicts(self):
+        result = self.exec_fetch(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'",
+            one=False)
+        table_names_dict = {k[0]: {} for k in result}
+        table_column_dict = deepcopy(table_names_dict)
+        table_index_dict = deepcopy(table_names_dict)
+
+        # get current columns
+        for tab in table_column_dict.keys():
+            cols = self.exec_fetch(
+                "SELECT column_name FROM information_schema.columns where table_name = '{}'".format(tab), one=False)
+            table_column_dict[tab] = {k[0] for k in cols}
+
+            indexes = {}  # (cols) -> [Index obj1, obj2, ...]
+            curr_index_def = self.exec_fetch(
+                "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = '{}'".format(tab),
+                one=False)  # schemaname = 'public'
+            p1 = re.compile(r'[(](.*?)[)]', re.S)  # get the smallest brackets, (col1, col2,...)
+            for row in curr_index_def:  # row[1] is the create statement, row[0] is the index name
+                res = re.findall(p1, row[1])
+                assert (len(res) == 1)
+                cols = tuple([a.strip() for a in res[0].split(',')])
+                # type hacking, there's a better way to do this
+                type = 'btree'
+                if 'hash' in row[1]:
+                    type = 'hash'
+                if cols not in indexes.keys():
+                    indexes[cols] = []
+                indexes[cols].append(Index(cols, tab, type, row[0], True))
+            table_index_dict[tab] = indexes
+
+        return table_names_dict, table_column_dict, table_index_dict
 
     def create_database(self, database_name):
         self.exec_only("create database {}".format(database_name))
@@ -75,12 +108,13 @@ class PostgresDatabaseConnector(DatabaseConnector):
             return True
         return False
 
-    def _simulate_index(self, cols, table_name):
+    def _simulate_index(self, triple):
+        cols, tab, type = triple
         names = ",".join(cols)
         statement = (
             "select * from hypopg_create_index( "
-            f"'create index on {table_name} "
-            f"({names})')"
+            f"'create index on {tab} "
+            f"using {type} ({names})')"
         )
         result = self.exec_fetch(statement)
         return result
@@ -91,11 +125,12 @@ class PostgresDatabaseConnector(DatabaseConnector):
 
         assert result[0] is True, f"Could not drop simulated index with oid = {oid}."
 
-    def create_index(self, cols, table_name):
+    def create_index(self, triple):
+        cols, tab, type = triple
         names = ",".join(cols)
         statement = (
-            f"create index {'index_' + table_name +'_'+ '_'.join(cols)} "
-            f"on {table_name} ({names})"
+            f"create index {type + '_' + tab + '_' + '_'.join(cols)} "
+            f"on {tab} using {type} ({names})"
         )
         self.exec_only(statement)
         # size = self.exec_fetch(
@@ -108,9 +143,10 @@ class PostgresDatabaseConnector(DatabaseConnector):
         logging.info("Dropping indexes")
         stmt = "select indexname from pg_indexes where schemaname='public'"
         indexes = self.exec_fetch(stmt, one=False)
+        restricted = self.get_restricted_indexnames()
         for index in indexes:
             index_name = index[0]
-            if 'pkey' in index_name:
+            if index_name in restricted:
                 continue
             drop_stmt = "drop index {}".format(index_name)
             print("Dropping index {}".format(index_name))
@@ -137,7 +173,8 @@ class PostgresDatabaseConnector(DatabaseConnector):
         return result
 
     def is_col_varchar(self, col_name, tab_name):
-        statement = "SELECT data_type FROM information_schema.columns WHERE table_name = '{}' and column_name = '{}';".format(tab_name, col_name)
+        statement = "SELECT data_type FROM information_schema.columns WHERE table_name = '{}' and column_name = '{}';".format(
+            tab_name, col_name)
         type_name = self.exec_fetch(statement, one=True)[0]
         return 'char' in type_name
 
@@ -160,3 +197,10 @@ class PostgresDatabaseConnector(DatabaseConnector):
             self._connection.rollback()
             return False
 
+    def get_restricted_indexnames(self):
+        statement = "SELECT indexrelid, subq.relname, indisunique, indisprimary, indisexclusion FROM pg_index JOIN (SELECT oid, relname FROM pg_class WHERE  relname IN (SELECT indexname FROM   pg_indexes WHERE  schemaname = 'public')) AS subq ON indexrelid = subq.oid WHERE  ( indisunique OR indisprimary OR indisexclusion );"
+        res = self.exec_fetch(statement, one=False)
+        ret = set()
+        for row in res:
+            ret.add(row[1])
+        return ret

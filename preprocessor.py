@@ -354,12 +354,12 @@ class Preprocessor:
                             break
                 # 拿到确定了col的orderby 最高列
                 for where_col in where_cols:
-                    if col.split('.')[0] == where_col.split('.')[0]: # same table
+                    if col.split('.')[0] == where_col.split('.')[0]:  # same table
                         ret.append(where_col)
                 if len(ret) > 0:
                     ret.append(col)
                 break
-            return ret # not appeared in where
+            return ret  # not appeared in where
 
         def parse(sql, table_column_dict):
             sql = sql.replace("\r", "").replace("\n", "")
@@ -392,14 +392,15 @@ class Preprocessor:
 
                     pos = sql.find('SET ')
                     if pos >= 0:
-                        banned = sql[pos+4: sql.find('=')].strip()
+                        banned = sql[pos + 4: sql.find('=')].strip()
                         banned_cols = table_parse([banned], tables, table_column_dict)
                         banned_cols.sort()
             except Exception as e:  # parser error, must be the strange title in epinions, hack
-                print(e, "try hacking:", sql) # "UPDATE item SET title = 'A2S;:J)X p/TL''@!Et1q=ey:)U}xi?77Ig%''Kt9l@~dYVHw .NLSF&8ryWe-m/v*&)X p;HDX#4)Qx=Yvr)1d''Ox=#1v8J*e.x''$_6\\pV_/ &a_[&dwFXbpvABD*Bs.' WHERE i_id=208;"
+                print(e, "try hacking:",
+                      sql)  # "UPDATE item SET title = 'A2S;:J)X p/TL''@!Et1q=ey:)U}xi?77Ig%''Kt9l@~dYVHw .NLSF&8ryWe-m/v*&)X p;HDX#4)Qx=Yvr)1d''Ox=#1v8J*e.x''$_6\\pV_/ &a_[&dwFXbpvABD*Bs.' WHERE i_id=208;"
                 st = sql.find('SET')
-                end =sql.find('WHERE')
-                sql2 = sql[:st] + sql[end:] # 'UPDATE item WHERE i_id=208;'
+                end = sql.find('WHERE')
+                sql2 = sql[:st] + sql[end:]  # 'UPDATE item WHERE i_id=208;'
                 try:
                     pser = Parser(sql2)
                     dc = pser.columns_dict
@@ -410,7 +411,6 @@ class Preprocessor:
                             wheres.sort()
                 except Exception as e2:
                     print("still cannot parse columns:", sql2)
-
 
             for token in pglast.parser.scan(sql):
                 token_str = str(sql[token.start: token.end + 1])
@@ -486,7 +486,8 @@ class Preprocessor:
             ["query_subst", "query_template", "query_params", "where_cols", "order_by_cols", "join_cols",
              "group_by_cols", "banned_cols"]]
         return df[
-            ["log_time", "query_template", "query_params", "where_cols", "order_by_cols", "join_cols", "group_by_cols", "banned_cols"]]
+            ["log_time", "query_template", "query_params", "where_cols", "order_by_cols", "join_cols", "group_by_cols",
+             "banned_cols"]]
 
     def __init__(self, csvlogs=None, parquet_path=None, table_column_dict=None):
         """

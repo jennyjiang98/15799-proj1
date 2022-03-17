@@ -41,19 +41,19 @@ class DatabaseConnector:
     def rollback(self):
         self._connection.rollback()
 
-    def drop_index(self, cols, table_name):
-        statement = f"drop index {'index_' + table_name +'_'+ '_'.join(cols)}"
-        self.exec_only(statement)
+    # def drop_index(self, cols, table_name):
+    #     statement = f"drop index {'index_' + table_name +'_'+ '_'.join(cols)}"
+    #     self.exec_only(statement)
 
     def drop_index(self, index_name):
         statement = f"drop index {index_name}"
         self.exec_only(statement)
 
-    def simulate_index(self, cols, table_name):
+    def simulate_index(self, triple):
         self.simulated_indexes += 1
 
         start_time = time.time()
-        result = self._simulate_index(cols, table_name)
+        result = self._simulate_index(triple)
         end_time = time.time()
         self.index_simulation_duration += end_time - start_time
 
@@ -108,7 +108,7 @@ class DatabaseConnector:
     def _get_plan(self, query):
         raise NotImplementedError
 
-    def _simulate_index(self, cols, table_name):
+    def _simulate_index(self, triple):
         raise NotImplementedError
 
     def _drop_simulated_index(self, identifier):
