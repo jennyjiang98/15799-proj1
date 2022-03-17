@@ -9,6 +9,7 @@ def task_project1_setup():
             "actions": [
                 # 'sudo apt update',
                 'sudo bash -c "echo ' + content + ' >> ' + file + '"',
+                'sudo service postgresql restart',
                 'sudo apt -y install postgresql-14-hypopg',
                 'sudo apt -y install python3-pip',
                 'pip3 install sql_metadata',
