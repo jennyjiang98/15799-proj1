@@ -396,8 +396,8 @@ class Preprocessor:
                         banned_cols = table_parse([banned], tables, table_column_dict)
                         banned_cols.sort()
             except Exception as e:  # parser error, must be the strange title in epinions, hack
-                print(e, "try hacking:",
-                      sql)  # "UPDATE item SET title = 'A2S;:J)X p/TL''@!Et1q=ey:)U}xi?77Ig%''Kt9l@~dYVHw .NLSF&8ryWe-m/v*&)X p;HDX#4)Qx=Yvr)1d''Ox=#1v8J*e.x''$_6\\pV_/ &a_[&dwFXbpvABD*Bs.' WHERE i_id=208;"
+                # print(e, "try hacking:",
+                #       sql)  # "UPDATE item SET title = 'A2S;:J)X p/TL''@!Et1q=ey:)U}xi?77Ig%''Kt9l@~dYVHw .NLSF&8ryWe-m/v*&)X p;HDX#4)Qx=Yvr)1d''Ox=#1v8J*e.x''$_6\\pV_/ &a_[&dwFXbpvABD*Bs.' WHERE i_id=208;"
                 st = sql.find('SET')
                 end = sql.find('WHERE')
                 sql2 = sql[:st] + sql[end:]  # 'UPDATE item WHERE i_id=208;'
@@ -456,6 +456,9 @@ class Preprocessor:
 
         df = self._read_df(csvlogs, log_columns)
         clock("Read dataframe")
+        # df.drop(index=df.index[:80000],
+        #         axis=0,
+        #         inplace=True)
 
         print("Extract queries: ", end="", flush=True)
         df["query_raw"] = self._extract_query(df["message"])

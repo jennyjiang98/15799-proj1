@@ -1,23 +1,4 @@
 # main process of tuning
-import csv
-import glob
-import re
-import itertools
-import pickle
-import glob
-import os
-import json
-from pathlib import Path
-
-from preprocessor import Preprocessor
-from postgres_dbms import PostgresDatabaseConnector
-from copy import deepcopy
-from cost_evaluation import CostEvaluation
-from utils import Index, get_appeared_candidate_with_cnt_dict, permutate_candidate_dict_all_lengths_prefix_cnt, \
-    merge_permutate_candidate_dict_all_lengths_prefix_cnt, merge_no_permutate_candidate_dict_prefix_cnt, \
-    dict_to_actions_sql
-import random
-
 # parameters
 min_cost_improvement = 1.003
 max_dropping_cost_degrade = 1.003
@@ -29,98 +10,18 @@ first_round_benefit_thresh = 5
 wkld_sample_size = 1000
 
 
-def get_column_candidates(preprocessor, table_names_dict):
-    # get column candidates which appeared together. Here I considered where/orderby/join/groupby
-    dfw = preprocessor.get_grouped_where_cnt()
-    dfo = preprocessor.get_grouped_order_by_cnt()
-    dfj = preprocessor.get_grouped_join_cnt()
-    dfg = preprocessor.get_grouped_group_by_cnt()
-    banned_set = preprocessor.get_banned_set()
-    where_candidate_no_permutation = get_appeared_candidate_with_cnt_dict(table_names_dict, dfw, banned_set)
-    where_candidate_permutation = permutate_candidate_dict_all_lengths_prefix_cnt(where_candidate_no_permutation)
-    join_candidate_no_permutation = get_appeared_candidate_with_cnt_dict(table_names_dict, dfj, banned_set)
-    order_candidate_no_permutation = get_appeared_candidate_with_cnt_dict(table_names_dict, dfo, banned_set)
-    groupby_candidate_no_permutation = get_appeared_candidate_with_cnt_dict(table_names_dict, dfg, banned_set)
-
-    merged_candidate = merge_permutate_candidate_dict_all_lengths_prefix_cnt(where_candidate_permutation,
-                                                                             join_candidate_no_permutation)
-    merged_candidate = merge_no_permutate_candidate_dict_prefix_cnt(merged_candidate, order_candidate_no_permutation)
-    merged_candidate = merge_no_permutate_candidate_dict_prefix_cnt(merged_candidate, groupby_candidate_no_permutation)
-    return merged_candidate
-
-
-def get_sampled_workload(preprocessor):
-    # Get workloads sampled by template
-    ratio = min(1, wkld_sample_size / len(preprocessor.get_dataframe().index))
-    return preprocessor.get_sampled_rows_by_template(ratio)
-
-
-def is_first_round(possible_permute_cand_sorted_set):
-    is_firstround = False
-    try:
-        with open('mystate.pkl', 'rb') as f:
-            dump_vars = pickle.load(f)
-        # use new parsed tables to check if appeared before
-        print("load success")
-        for cols, tab in possible_permute_cand_sorted_set:  # a index tup list
-            if tab not in dump_vars["seen_tables"]:  # new combination of tab and cols
-                is_firstround = True
-                print("is first round! seeing not seen table: ", tab)
-                break
-    except IOError:
-        is_firstround = True
-
-    if not is_firstround:
-        print("is not first round")
-        return is_firstround, dump_vars
-    else:
-        print("is first round")
-        return is_firstround, {}
-
-
-def check_revert(round_number, dump_vars, to_drop_list, to_build_list, curr_real_index_set):
-    revert = False
-    try:
-        print("checking results", round_number)
-        summary_path_format = './grading/iteration_{}/*summary.json'.format(round_number - 1)
-        files = glob.glob(summary_path_format)
-        max_file = max(files, key=os.path.getctime)
-        with open(max_file, 'r') as f:
-            dict_new = json.load(f)
-        summary_path_format = './grading/iteration_{}/*summary.json'.format(round_number - 2)
-        files = glob.glob(summary_path_format)
-        max_file_prev = max(files, key=os.path.getctime)
-        with open(max_file_prev, 'r') as f:
-            dict_old = json.load(f)
-        # same benchmark
-        bench1 = max_file.split('_')[1].split('/')[1]
-        bench2 = max_file_prev.split('_')[1].split('/')[1]
-        print(bench1, bench2)
-        if bench1 == bench2:
-            print("new and old throughput: ", dict_new["Goodput (requests/second)"],
-                  dict_old["Goodput (requests/second)"])
-            if dict_new["Goodput (requests/second)"] < revert_threshold * dict_old["Goodput (requests/second)"]:
-                print("big degrade! ")
-                to_drop_list.update(dump_vars["to_build_list_" + str(round_number - 1)])
-                to_build_list.update([k for k in dump_vars["to_drop_list_" + str(round_number - 1)] if
-                                      k not in curr_real_index_set])
-                if len(to_drop_list) != 0 or len(to_build_list) != 0:
-                    print("not empty, do revert")
-                    revert = True
-                else:
-                    print("empty, return to regular stuff")
-                    # if no op, revert = false
-            else:
-                print("no big degrade")
-        else:
-            print("benchmark not same")
-    except Exception as e:
-        print("open files failed")
-
-    return revert
-
-
 def generate(workload_csv, timeout):
+    import pickle
+
+    from preprocessor import Preprocessor
+    from postgres_dbms import PostgresDatabaseConnector
+    from copy import deepcopy
+    from cost_evaluation import CostEvaluation
+    from utils import Index, get_appeared_candidate_with_cnt_dict, permutate_candidate_dict_all_lengths_prefix_cnt, \
+        merge_permutate_candidate_dict_all_lengths_prefix_cnt, merge_no_permutate_candidate_dict_prefix_cnt, \
+        dict_to_actions_sql
+    import random
+
     db_connector = PostgresDatabaseConnector("project1db")
     # db_connector.drop_all_indexes()
     db_connector.create_statistics()
@@ -299,9 +200,9 @@ def generate(workload_csv, timeout):
         print("round", round_number)
         revert = False
 
-        # might be buggy: how to match bench with current tesing bench??
-        if round_number > 2:
-            revert = check_revert(round_number, dump_vars, to_drop_list, to_build_list, curr_real_index_set)
+        # might be buggy: sometimes there's variance. Also how to match bench with current tesing bench??
+        # if round_number > 2:
+        #     revert = check_revert(round_number, dump_vars, to_drop_list, to_build_list, curr_real_index_set)
 
         if revert == False:  # can do some exploring
             print("sorted_benefits_no_type", sorted_benefits_no_type)
@@ -402,3 +303,103 @@ def generate(workload_csv, timeout):
 
     with open('mystate.pkl', 'wb') as f:
         pickle.dump(dump_vars, f)
+
+
+def get_column_candidates(preprocessor, table_names_dict):
+    from utils import Index, get_appeared_candidate_with_cnt_dict, permutate_candidate_dict_all_lengths_prefix_cnt, \
+        merge_permutate_candidate_dict_all_lengths_prefix_cnt, merge_no_permutate_candidate_dict_prefix_cnt, \
+        dict_to_actions_sql
+    # get column candidates which appeared together. Here I considered where/orderby/join/groupby
+    print('whole csv len:', len(preprocessor.get_dataframe()))
+    dfw = preprocessor.get_grouped_where_cnt()
+    dfo = preprocessor.get_grouped_order_by_cnt()
+    dfj = preprocessor.get_grouped_join_cnt()
+    dfg = preprocessor.get_grouped_group_by_cnt()
+    banned_set = preprocessor.get_banned_set()
+    where_candidate_no_permutation = get_appeared_candidate_with_cnt_dict(table_names_dict, dfw, banned_set)
+    where_candidate_permutation = permutate_candidate_dict_all_lengths_prefix_cnt(where_candidate_no_permutation)
+    join_candidate_no_permutation = get_appeared_candidate_with_cnt_dict(table_names_dict, dfj, banned_set)
+    order_candidate_no_permutation = get_appeared_candidate_with_cnt_dict(table_names_dict, dfo, banned_set)
+    groupby_candidate_no_permutation = get_appeared_candidate_with_cnt_dict(table_names_dict, dfg, banned_set)
+
+    merged_candidate = merge_permutate_candidate_dict_all_lengths_prefix_cnt(where_candidate_permutation,
+                                                                             join_candidate_no_permutation)
+    merged_candidate = merge_no_permutate_candidate_dict_prefix_cnt(merged_candidate, order_candidate_no_permutation)
+    merged_candidate = merge_no_permutate_candidate_dict_prefix_cnt(merged_candidate, groupby_candidate_no_permutation)
+    return merged_candidate
+
+
+def get_sampled_workload(preprocessor):
+    # Get workloads sampled by template
+    ratio = min(1, wkld_sample_size / len(preprocessor.get_dataframe().index))
+    return preprocessor.get_sampled_rows_by_template(ratio)
+
+
+def is_first_round(possible_permute_cand_sorted_set):
+    import pickle
+    is_firstround = False
+    try:
+        with open('mystate.pkl', 'rb') as f:
+            dump_vars = pickle.load(f)
+        # use new parsed tables to check if appeared before
+        print("load success")
+        for cols, tab in possible_permute_cand_sorted_set:  # a index tup list
+            if tab not in dump_vars["seen_tables"]:  # new combination of tab and cols
+                is_firstround = True
+                print("is first round! seeing not seen table: ", tab)
+                break
+    except IOError:
+        is_firstround = True
+
+    if not is_firstround:
+        print("is not first round")
+        return is_firstround, dump_vars
+    else:
+        print("is first round")
+        return is_firstround, {}
+
+
+def check_revert(round_number, dump_vars, to_drop_list, to_build_list, curr_real_index_set):
+    import glob
+    import json
+    import os
+
+    revert = False
+    try:
+        print("checking results", round_number)
+        summary_path_format = './grading/iteration_{}/*summary.json'.format(round_number - 1)
+        files = glob.glob(summary_path_format)
+        max_file = max(files, key=os.path.getctime)
+        with open(max_file, 'r') as f:
+            dict_new = json.load(f)
+        summary_path_format = './grading/iteration_{}/*summary.json'.format(round_number - 2)
+        files = glob.glob(summary_path_format)
+        max_file_prev = max(files, key=os.path.getctime)
+        with open(max_file_prev, 'r') as f:
+            dict_old = json.load(f)
+        # same benchmark
+        bench1 = max_file.split('_')[1].split('/')[1]
+        bench2 = max_file_prev.split('_')[1].split('/')[1]
+        print(bench1, bench2)
+        if bench1 == bench2:
+            print("new and old throughput: ", dict_new["Goodput (requests/second)"],
+                  dict_old["Goodput (requests/second)"])
+            if dict_new["Goodput (requests/second)"] < revert_threshold * dict_old["Goodput (requests/second)"]:
+                print("big degrade! ")
+                to_drop_list.update(dump_vars["to_build_list_" + str(round_number - 1)])
+                to_build_list.update([k for k in dump_vars["to_drop_list_" + str(round_number - 1)] if
+                                      k not in curr_real_index_set])
+                if len(to_drop_list) != 0 or len(to_build_list) != 0:
+                    print("not empty, do revert")
+                    revert = True
+                else:
+                    print("empty, return to regular stuff")
+                    # if no op, revert = false
+            else:
+                print("no big degrade")
+        else:
+            print("benchmark not same")
+    except Exception as e:
+        print("open files failed")
+
+    return revert

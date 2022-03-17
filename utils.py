@@ -102,6 +102,7 @@ def dict_to_actions_sql(to_build, to_drop, to_cluster, related_curr_table_triple
         # "CREATE xxx"
     ]
     restricted_indexes_names = db_connector.get_restricted_indexnames()
+    print("restricted_indexes_names", restricted_indexes_names)
     # drop first, then cluster, then create, to modify less indexes
     for triple in to_drop:
         if triple in related_curr_table_triples2index_obj.keys() and related_curr_table_triples2index_obj[
@@ -115,7 +116,7 @@ def dict_to_actions_sql(to_build, to_drop, to_cluster, related_curr_table_triple
             actions_sql_list.append(statement)
 
         else:
-            print("We cannot drop a index not exists / is restricted: ", triple)
+            print("We cannot drop a index not exists / is restricted: ", triple, restricted_indexes_names)
 
     both = to_build.intersection(to_cluster)
     to_cluster -= both
